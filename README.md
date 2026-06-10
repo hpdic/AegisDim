@@ -20,7 +20,7 @@ sudo apt install python3.11 python3.11-venv -y
 python3.11 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1 --index-url https://download.pytorch.org/whl/cu121
 pip install transformers peft llm2vec datasets
 
 ### Directory Structure
@@ -38,3 +38,4 @@ pip install transformers peft llm2vec datasets
 Run the forward propagation testing script in the root directory to ensure the tensor dimension-slicing logic of the adaptive module strictly matches the physical expectations:
 
 python scripts/test_smec_forward.py
+python scripts/test_integration.py
