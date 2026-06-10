@@ -7,12 +7,17 @@ AegisDim is an adaptive multimodal Matryoshka feature compression framework guid
 To maintain a clean system environment and avoid dependency conflicts, please make sure to use a Python virtual environment.
 
 1. Create a virtual environment named 'venv'
+```bash
 python3 -m venv venv
+```
 
 2. Activate the virtual environment
+```bash
 source venv/bin/activate
+```
 
 3. Install core dependencies
+```bash
 sudo apt install software-properties-common -y
 sudo add-apt-repository ppa:deadsnakes/ppa -y
 sudo apt update
@@ -22,6 +27,7 @@ source venv/bin/activate
 pip install --upgrade pip
 pip install torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1 --index-url https://download.pytorch.org/whl/cu121
 pip install transformers peft llm2vec datasets
+```
 
 ### Directory Structure
 
@@ -31,11 +37,12 @@ pip install transformers peft llm2vec datasets
   * smec_adaptor.py Contains the residual feature adaptor and the scoring-based dynamic truncation module
 * scripts/ Stores execution scripts and testing scaffolds
   * test_smec_forward.py A minimal testing script to verify the forward propagation of tensors
-* train_smec.py The main training loop for joint optimization
 
 ### Quick Verification
 
 Run the forward propagation testing script in the root directory to ensure the tensor dimension-slicing logic of the adaptive module strictly matches the physical expectations:
-
+```bash
 python scripts/test_smec_forward.py
 python scripts/test_integration.py
+python train_smec.py
+```
