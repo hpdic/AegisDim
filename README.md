@@ -13,20 +13,28 @@ python3 -m venv venv
 source venv/bin/activate
 
 3. Install core dependencies
-pip install -r requirements.txt
+sudo apt install software-properties-common -y
+sudo add-apt-repository ppa:deadsnakes/ppa -y
+sudo apt update
+sudo apt install python3.11 python3.11-venv -y
+python3.11 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install transformers peft llm2vec datasets
 
 ### Directory Structure
 
 * data/ Stores raw and processed evaluation datasets
 * models/ Stores core network components
   * backbone.py Responsible for loading the strictly frozen foundational multimodal large model
-  * smec_adaptor.py Contains the residual feature adaptor and the scoring based dynamic truncation module
+  * smec_adaptor.py Contains the residual feature adaptor and the scoring-based dynamic truncation module
 * scripts/ Stores execution scripts and testing scaffolds
   * test_smec_forward.py A minimal testing script to verify the forward propagation of tensors
 * train_smec.py The main training loop for joint optimization
 
 ### Quick Verification
 
-Run the forward propagation testing script in the root directory to ensure the tensor dimension slicing logic of the adaptive module strictly matches the physical expectations:
+Run the forward propagation testing script in the root directory to ensure the tensor dimension-slicing logic of the adaptive module strictly matches the physical expectations:
 
 python scripts/test_smec_forward.py
