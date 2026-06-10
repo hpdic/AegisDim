@@ -6,6 +6,7 @@ from datasets import load_dataset
 from collections import deque
 import os
 import sys
+import math
 
 # 屏蔽 stderr 进度条
 sys.stderr = open(os.devnull, 'w')
@@ -30,7 +31,7 @@ def rank_loss(emb_q, emb_d, dim=None):
 
     # For each positive, all other docs are negatives (I(y_ij>y_ik) always true)
     diff = neg_sim - pos_sim
-    loss = torch.log(1 + torch.exp(diff))   # (B, B)
+    loss = F.softplus(diff)   # log(1+exp(diff)), numerically stable
     loss = loss.sum() / (B * (B - 1))
     return loss
 
@@ -68,13 +69,7 @@ class SXBM:
         return idx
 
     def compute_unsup_loss(self, query_high, query_low, adaptor, stage_idx):
-        """
-        Eq. 7: Σ_i,j |sim(high_i, high_j) - sim(low_i, low_j)|
-        query_high: (B, D) original high-dim embeddings of current batch
-        query_low : (B, d) low-dim embeddings after current stage
-        adaptor   : SMECAdaptor (to compute low-dim for memory items)
-        stage_idx : current stage index (0-based)
-        """
+        """Eq. 7: L1 distance between high-dim and low-dim similarities on hard samples."""
         if self.queue_tensor is None:
             return torch.tensor(0.0, device=query_high.device)
 
@@ -88,25 +83,23 @@ class SXBM:
         # Compute low-dim embeddings of memory items using the adaptor up to current stage
         mem_high_flat = mem_high.reshape(B * K, -1)  # (B*K, D)
         with torch.no_grad():
-            # Run all previous frozen stages
             mem_low = mem_high_flat
             for i in range(stage_idx):
                 mem_low, _ = adaptor.stages[i](mem_low)
-            # Run current stage (trainable) – no gradient on memory
             mem_low, _ = adaptor.stages[stage_idx](mem_low)
         mem_low = mem_low.view(B, K, -1)  # (B, K, d)
 
-        # Compute high-dim similarities
-        q_high_n = F.normalize(query_high, dim=1).unsqueeze(1)       # (B, 1, D)
-        m_high_n = F.normalize(mem_high, dim=2)                      # (B, K, D)
-        sim_high = (q_high_n * m_high_n).sum(dim=2)                  # (B, K)
+        # High-dim similarities
+        q_high_n = F.normalize(query_high, dim=1).unsqueeze(1)
+        m_high_n = F.normalize(mem_high, dim=2)
+        sim_high = (q_high_n * m_high_n).sum(dim=2)
 
-        # Compute low-dim similarities
-        q_low_n = F.normalize(query_low, dim=1).unsqueeze(1)         # (B, 1, d)
-        m_low_n = F.normalize(mem_low, dim=2)                        # (B, K, d)
-        sim_low = (q_low_n * m_low_n).sum(dim=2)                     # (B, K)
+        # Low-dim similarities
+        q_low_n = F.normalize(query_low, dim=1).unsqueeze(1)
+        m_low_n = F.normalize(mem_low, dim=2)
+        sim_low = (q_low_n * m_low_n).sum(dim=2)
 
-        loss = F.l1_loss(sim_low, sim_high.detach())                 # Eq. 7
+        loss = F.l1_loss(sim_low, sim_high.detach())
         return loss
 
 
@@ -131,6 +124,11 @@ def train():
     epochs_per_stage = 10
     num_batches = 200
 
+    # Warmup settings for unsup loss
+    unsup_warmup_epochs = 3   # first 3 epochs only rank loss
+    unsup_weight_start = 0.1
+    unsup_weight_end = 1.0
+
     print("=== SMEC Sequential Training ===")
 
     for stage_idx, stage in enumerate(adaptor.stages):
@@ -151,6 +149,18 @@ def train():
         for epoch in range(epochs_per_stage):
             total_rank = 0.0
             total_unsup = 0.0
+            total_grad_norm = 0.0
+
+            # Gumbel-Softmax temperature annealing
+            tau = max(5.0 - epoch * 0.5, 1.0)  # decrease from 5.0 to 1.0
+
+            # Unsupervised loss weight scheduling
+            if epoch < unsup_warmup_epochs:
+                alpha = 0.0
+            else:
+                # linearly increase from warmup to end
+                progress = (epoch - unsup_warmup_epochs) / (epochs_per_stage - unsup_warmup_epochs)
+                alpha = unsup_weight_start + (unsup_weight_end - unsup_weight_start) * progress
 
             for batch_idx in range(num_batches):
                 start = (batch_idx * batch_size) % len(dataset)
@@ -171,23 +181,28 @@ def train():
                         emb_q_in, _ = adaptor.stages[i](emb_q_in)
                         emb_d_in, _ = adaptor.stages[i](emb_d_in)
 
-                # 3. Current stage forward (trainable)
-                emb_q_low, _ = stage(emb_q_in)
-                emb_d_low, _ = stage(emb_d_in)
+                # 3. Current stage forward (trainable) with annealed tau
+                emb_q_low, _ = stage(emb_q_in, tau=tau, hard=(epoch >= unsup_warmup_epochs))
+                emb_d_low, _ = stage(emb_d_in, tau=tau, hard=(epoch >= unsup_warmup_epochs))
 
                 # 4. Rank loss
                 loss_r = rank_loss(emb_q_low, emb_d_low)
 
-                # 5. Unsupervised loss (S-XBM)
-                # We use query high-dim embedding vs its low-dim version with memory
-                loss_u = sxbm.compute_unsup_loss(
-                    emb_q_high, emb_q_low, adaptor, stage_idx
-                )
+                # 5. Unsupervised loss (S-XBM) - only after warmup and with weight alpha
+                if alpha > 0 and sxbm.queue_tensor is not None and sxbm.queue_tensor.size(0) >= sxbm.topk:
+                    loss_u = sxbm.compute_unsup_loss(emb_q_high, emb_q_low, adaptor, stage_idx)
+                else:
+                    loss_u = torch.tensor(0.0, device=device)
 
-                loss = loss_r + 1.0 * loss_u   # α=1.0
+                loss = loss_r + alpha * loss_u
 
                 optimizer.zero_grad()
                 loss.backward()
+
+                # Gradient clipping and logging
+                total_norm = torch.nn.utils.clip_grad_norm_(stage.parameters(), max_norm=1.0)
+                total_grad_norm += total_norm.item()
+
                 optimizer.step()
 
                 # 6. Enqueue high-dim embeddings to memory (detached)
@@ -195,14 +210,18 @@ def train():
                 sxbm.enqueue(emb_d_high.detach())
 
                 total_rank += loss_r.item()
-                total_unsup += loss_u.item()
+                total_unsup += loss_u.item() if isinstance(loss_u, torch.Tensor) else loss_u
 
                 if batch_idx % 50 == 0:
                     print(f"  Epoch {epoch+1}, Batch {batch_idx}: "
-                          f"Rank={loss_r.item():.4f}, Unsup={loss_u.item():.4f}")
+                          f"Rank={loss_r.item():.4f}, Unsup={loss_u.item():.4f}, "
+                          f"tau={tau:.2f}, alpha={alpha:.2f}, grad_norm={total_norm:.2f}")
 
-            print(f"  Epoch {epoch+1} avg: Rank={total_rank/num_batches:.4f}, "
-                  f"Unsup={total_unsup/num_batches:.4f}")
+            avg_rank = total_rank / num_batches
+            avg_unsup = total_unsup / num_batches
+            avg_grad = total_grad_norm / num_batches
+            print(f"  Epoch {epoch+1} avg: Rank={avg_rank:.4f}, Unsup={avg_unsup:.4f}, "
+                  f"Grad={avg_grad:.2f}, tau={tau:.2f}, alpha={alpha:.2f}")
 
         print(f"Stage {stage_idx+1} done. Freezing.")
 

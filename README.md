@@ -42,7 +42,5 @@ pip install transformers peft llm2vec datasets
 
 Run the forward propagation testing script in the root directory to ensure the tensor dimension-slicing logic of the adaptive module strictly matches the physical expectations:
 ```bash
-python scripts/test_smec_forward.py
-python scripts/test_integration.py
 python train_smec.py
 ```
