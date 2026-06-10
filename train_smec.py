@@ -182,8 +182,8 @@ def train():
                         emb_d_in, _ = adaptor.stages[i](emb_d_in)
 
                 # 3. Current stage forward (trainable) with annealed tau
-                emb_q_low, _ = stage(emb_q_in, tau=tau, hard=(epoch >= unsup_warmup_epochs))
-                emb_d_low, _ = stage(emb_d_in, tau=tau, hard=(epoch >= unsup_warmup_epochs))
+                emb_q_low, _ = stage(emb_q_in, tau=tau, hard=False, force_soft=True)
+                emb_d_low, _ = stage(emb_d_in, tau=tau, hard=False, force_soft=True)
 
                 # 4. Rank loss
                 loss_r = rank_loss(emb_q_low, emb_d_low)
